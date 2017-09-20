@@ -1,0 +1,236 @@
+---
+title: "Personalized Medicine: Exploration"
+output: 
+  html_document:
+    keep_md: true
+---
+In this notebook, I will just explore the data and try to get some insights on how the target variable `Class` is related to the features (extracted or engineered from the data). 
+
+```{r, echo=FALSE}
+library(readr)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(purrr)
+library(tidytext)
+library(tokenizers)
+library(grid)
+library(gridExtra)
+library(ggplot2)
+```
+We first load the variants data, which is simple:
+```{r}
+train_variants <- read_csv("./data/training_variants", progress = FALSE)
+test_variants <- read_csv("./data/test_variants", progress = FALSE)
+```
+Loading the text data is a little more involved. A simple call to `read_delim` was unsuccesful. So we read the data as a simple text and then split into a data frame as follows:
+```{r}
+# train
+train_text <- read_lines("./data/training_text", skip=1)
+train_text_df <- str_split_fixed(train_text, pattern = "\\|\\|", n = 2) %>% tbl_df()
+colnames(train_text_df) <- c("ID", "Text")
+train_text_df <- train_text_df %>% mutate(ID = as.integer(ID))
+# test
+test_text <- read_lines("./data/test_text", skip=1)
+test_text_df <- str_split_fixed(test_text, pattern = "\\|\\|", n = 2) %>% tbl_df()
+colnames(test_text_df) <- c("ID", "Text")
+test_text_df <- test_text_df %>% mutate(ID = as.integer(ID))
+```
+```{r, echo=FALSE}
+rm(train_text,test_text); gc()
+```
+
+### Variants data
+
+Let's look at how `Class` is distributed in training data (this is the target):
+```{r}
+train_variants %>%
+  group_by(Class) %>%
+  count(Class,sort=TRUE)
+```
+Clearly, there is an inbalance in the class labels, which we need to be aware of. 
+
+#### Gene
+Let's look at how `Gene` feature is distributed. The top 25 most common genes for training/test data are:
+```{r}
+df0 <- train_variants %>% 
+  group_by(Gene) %>%
+  count(Gene,sort=TRUE) %>% 
+  slice(1:25)
+
+df00 <- test_variants %>%
+  group_by(Gene) %>%
+  count(Gene,sort=TRUE) %>%
+  slice(1:25)
+```
+
+```{r, fig.width=10, fig.height=5}
+gg0 <- ggplot(df0, aes(reorder(Gene, -n, FUN=min), n)) + 
+  geom_bar(stat="identity", fill = "salmon") + 
+  coord_flip() + 
+  labs(x = "Gene", y = "Count") + ggtitle('Training Data')
+
+gg00 <- ggplot(df00, aes(reorder(Gene, -n, FUN=min), n)) + 
+  geom_bar(stat="identity", fill = "salmon") + 
+  coord_flip() + 
+  labs(x = "Gene", y = "Count") + ggtitle('Test Data')
+
+grid.arrange(gg0, gg00, ncol=2)
+
+```
+Clearly, there is rather a different distribution of top Genes in training and test data.
+```{r}
+intersect(df0$Gene, df00$Gene)
+```
+This is probably due to the artificial data generated in the test set to avoid hand labelling.
+
+How is `Gene` related to Class (outcome)
+```{r}
+top_genes <- df0 %>% filter(n > 40)
+df1 <- train_variants %>%
+  filter(Gene %in% top_genes$Gene) %>%
+  group_by(Gene,Class) %>%
+  summarise(count = n()) 
+
+gg1 <- ggplot(df1, aes(Gene,count)) + 
+  geom_bar(stat = 'identity', fill='salmon') + 
+  theme(axis.text.x  = element_text(angle=90)) +
+  facet_wrap(~Class)
+gg1
+```
+
+#### Variation
+How does `Variation` is distributed? 
+```{r}
+df1 <- train_variants %>% 
+  group_by(Variation) %>%
+  count(Variation, sort=TRUE) %>%
+  mutate(is.train = TRUE) 
+
+
+df11 <- test_variants %>% 
+  group_by(Variation) %>%
+  count(Variation, sort=TRUE) %>%
+  mutate(is.train = FALSE)
+
+
+df111 <- full_join(df1, df11, by = c("Variation", "n", "is.train"))
+df111[is.na(df111)] <- 0
+df111 %>% top_n(8, n) 
+```
+There are so many unique values to `Variation`, and most of them are observed once.
+
+How is `Variation` is related to clas?
+```{r}
+top_variations <- df111 %>% filter(n > 3)
+df2 <- train_variants %>%
+  filter(Variation %in% top_variations$Variation) %>%
+  group_by(Variation,Class) %>%
+  summarise(count = n()) 
+
+gg2 <- ggplot(df2, aes(Variation,count)) + 
+  geom_bar(stat = 'identity', fill='salmon') + 
+  theme(axis.text.x  = element_text(angle=90)) +
+  facet_wrap(~Class)
+gg2
+```
+Truncating mutations seem to have a large correlation with Class = 1. None of the top variations has any knowledge of Class 3,4,9.
+
+### Ratio features
+Let's engineer ratio features (`n_Variatiob_Class`/`n_Variation`) using 5 folds. See documentation for details. 
+```{r}
+source('create_ratio_features.R')
+train_new <- create_ratios_folds(train_variants, 5)
+names(train_new) <- c("ID", "Gene", "Variation", "Class", paste0("R",1:9))
+```
+Let's look at this data
+```{r}
+train_new
+```
+How does the new ratio features (`R1`,.., `R9`) correlate with Class?
+```{r}
+gg3 <- ggplot(train_new %>% gather(key = "Ratio", value = "value", -c(ID,Gene,Variation,Class)) %>% 
+                mutate(Ratio = as.factor(Ratio)) %>%
+                mutate(Class = as.factor(Class)) %>%
+                filter(Ratio %in% c("R1","R4", "R9")), 
+              aes(value)) + 
+  geom_histogram(aes(fill = Ratio), binwidth = 0.1) + 
+  facet_wrap(~Class) + 
+  ggtitle("R1,R4,R9 Counts for Classes")
+gg3
+```
+Clearly, these ratio features correlate better with the Class they represent.
+
+### Text data
+```{r,echo=FALSE}
+rm(train_new,df1,df11,df111,df0,df00,df2); gc()
+```
+Now let's tokenize train
+```{r}
+train_txt <- train_text_df %>% unnest_tokens(word, Text)
+```
+Most common words
+```{r}
+train_txt %>% count(word, sort=TRUE) %>% slice(1:10)
+```
+These are stop words that we can remove. 
+
+```{r}
+library(SnowballC)
+data("stop_words")
+# Extra words that can be removed which we add by hand
+my_stopwords <- data_frame(word = c(as.character(1:100),
+                                    "fig", "figure", "et", "al", "table",
+                                    "data", "analysis", "analyze", "study",
+                                    "method", "result", "conclusion", "author",
+                                    "find", "found", "show", "perform",
+                                    "demonstrate", "evaluate", "discuss"))
+train_txt <- train_txt %>% mutate(word = wordStem(word))
+train_txt <- train_txt %>%
+  anti_join(stop_words, by = 'word') %>%
+  anti_join(my_stopwords, by = 'word') %>%
+  filter(str_detect(word, "[:alpha:]")) # No numbers
+```
+```{r}
+train_txt %>% count(word, sort=TRUE) %>% slice(1:20)
+```
+Let's visualize
+```{r}
+gg4 <- ggplot(train_txt %>% count(word, sort=TRUE) %>% slice(1:25), aes(word,n)) + 
+  geom_bar(stat="identity", fill='salmon') + 
+  coord_flip()
+gg4
+```
+Use term frequency-inverse document frequency (tf-idf) function. 
+First, treat "Class" as "Document" of td-idf: 
+```{r}
+foo <- train_variants %>% select(ID, Class)
+txt_class <- full_join(train_txt, foo, by = "ID")
+
+frequency <-txt_class %>%
+  count(Class, word)
+
+tf_idf <- frequency %>%
+  bind_tf_idf(word, Class, n)
+```
+```{r}
+tf_idf %>% filter(tf_idf > 1e-3)
+```
+This gives us a subset of words that are correlated with class labels.
+
+In the standard td-idf approach, the "Document" should be `ID`. Let's try that as well:
+```{r}
+foo <- train_variants %>% select(ID, Class)
+txt_class <- full_join(train_txt, foo, by = "ID")
+
+frequency <-txt_class %>%
+  count(ID, word, sort=TRUE) %>%
+  slice(1:5000) # Keep only the first 5000 most frequent words
+
+tf_idf <- frequency %>%
+  bind_tf_idf(word, ID, n)
+```
+```{r}
+tf_idf %>% filter(tf_idf > 1e-3)
+```
+I'm not sure why we get the above warning, but the function seem to work. Looks like treating `Class` as document seems like a better idea.
