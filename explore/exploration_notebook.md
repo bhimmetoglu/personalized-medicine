@@ -300,8 +300,8 @@ Clearly, these ratio features correlate better with the Class they represent.
 
 ```
 ##            used  (Mb) gc trigger   (Mb)  max used  (Mb)
-## Ncells  1838790  98.3    3205452  171.2   2637877 140.9
-## Vcells 59184361 451.6  142201478 1085.0 125566456 958.0
+## Ncells  1838633  98.2    3205452  171.2   2637877 140.9
+## Vcells 59184041 451.6  142201478 1085.0 125566456 958.0
 ```
 Now let's tokenize train
 
